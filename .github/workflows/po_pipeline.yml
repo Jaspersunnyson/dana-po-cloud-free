@@ -1,0 +1,88 @@
+name: PO Pipeline (Deta)
+
+on:
+  repository_dispatch:
+    types: [po_review_request]
+
+jobs:
+  po-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Download inputs from worker
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}
+          JOB_ID: ${{ github.event.client_payload.jobId }}
+        run: |
+          mkdir -p inputs
+          # Download uploaded documents and toggles from the Deta worker
+          for name in po pi commission toggles.json; do
+            curl -sSf -H "Authorization: Bearer $WORKER_TOKEN" "$WORKER_URL/artifact/$JOB_ID/$name" -o "inputs/$name" || true
+          done
+
+      - name: Run PO review pipeline
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -e
+          # Normalize and partition the input documents
+          python scripts/normalize_and_partition.py --inputs inputs/po inputs/pi inputs/commission --out elements.json
+          # Chunk documents and generate embeddings; uses local vector store
+          python scripts/chunk_and_index.py --elements elements.json --outdir run
+          # Deterministic checks
+          python scripts/deterministic_checks.py --elements elements.json --template irr_main --toggles inputs/toggles.json --out run/deterministic.json
+          # Retrieve candidate clauses for model comparison
+          python scripts/retrieve_candidates.py --child_chunks run/child_chunks.jsonl --requirements schemas/requirements_contract_main_IRR.json --out run/llm_jobs.jsonl
+          # Infer clause classifications (trained model optional)
+          if [ -f classifier_model.joblib ]; then
+            python scripts/classifier_infer.py --model classifier_model.joblib --input run/llm_jobs.jsonl --output run/classified.jsonl
+          fi
+          # Generate dummy OpenAI results to keep the workflow functional without an API call
+          # In a real deployment, you would call the OpenAI API here with Structured Outputs
+          python - <<'PY'
+import json, os
+jobs = open('run/llm_jobs.jsonl','r',encoding='utf-8').read().splitlines()
+with open('run/llm_results.jsonl','w',encoding='utf-8') as f:
+    for line in jobs:
+        job = json.loads(line)
+        f.write(json.dumps({
+            "clause": job.get("clause_id"),
+            "status": "UNCERTAIN",
+            "expected": job.get("expected"),
+            "actual": "",
+            "evidence": {"doc": "", "page": 0, "element_id": "", "excerpt": ""},
+            "fix": "",
+            "severity": "MEDIUM"
+        }, ensure_ascii=False) + "\n")
+PY
+          # Judge the results
+          python scripts/judge.py --schema schemas/structured_output_schema.json --llm_results run/llm_results.jsonl --template_text "{}" --out run/judged.jsonl
+          # Build final report
+          python scripts/report_builder.py --deterministic run/deterministic.json --judged run/judged.jsonl --outdir run
+
+      - name: Upload outputs back to worker
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}
+          JOB_ID: ${{ github.event.client_payload.jobId }}
+        run: |
+          set -e
+          for file in 00_Review_Report.docx issues.json issues.csv; do
+            if [ -f run/$file ]; then
+              curl -sSf -H "Authorization: Bearer $WORKER_TOKEN" -X PUT --data-binary @run/$file "$WORKER_URL/artifact/$JOB_ID/$file"
+            fi
+          done
+          # Update status to ready
+          echo '{"status":"ready"}' | curl -sSf -H "Authorization: Bearer $WORKER_TOKEN" -X PUT --data-binary @- "$WORKER_URL/status/$JOB_ID"
