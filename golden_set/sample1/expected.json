@@ -1,0 +1,16 @@
+{
+  "overall_status": "PASS",
+  "clauses": {
+    "warranty": "PASS",
+    "hidden_defects": "PASS",
+    "accessories": "PASS",
+    "ip_indemnity": "PASS",
+    "termination_setoff": "PASS",
+    "liquidated_damages": "PASS",
+    "partial_shipments": "PASS",
+    "delivery_anchor": "PASS",
+    "qc_docs": "PASS",
+    "fx_rate": "PASS",
+    "noban_option": "PASS"
+  }
+}
