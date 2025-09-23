@@ -1,0 +1,11 @@
+unstructured
+sentence-transformers
+langchain
+llama-index
+scikit-learn
+diff-match-patch
+python-docx
+docxtpl
+joblib
+hazm
+numpy
