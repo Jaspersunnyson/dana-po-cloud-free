@@ -1,0 +1,20 @@
+{
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "fa": {
+          "type": "persian"
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "text": { "type": "text", "analyzer": "fa" },
+      "doc": { "type": "keyword" },
+      "page": { "type": "integer" },
+      "element_id": { "type": "keyword" },
+      "type": { "type": "keyword" }
+    }
+  }
+}
