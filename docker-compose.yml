@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # OpenSearch service configured as a single‑node cluster with the built‑in persian
+  # analyzer enabled. The security plugin is disabled to simplify local use. The
+  # custom config directory is mounted from the `opensearch` folder of this repo.
+  opensearch:
+    image: opensearchproject/opensearch:2.9.0
+    container_name: opensearch
+    environment:
+      - discovery.type=single-node
+      - "plugins.security.disabled=true"
+      - "bootstrap.memory_lock=true"
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+      - ./opensearch:/usr/share/opensearch/config/custom
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Optional OpenSearch Dashboards for debugging and browsing your index.
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.9.0
+    container_name: opensearch-dashboards
+    depends_on:
+      - opensearch
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch:9200"]
+    ports:
+      - "5601:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:5601/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Qdrant vector database used for storing dense BGE‑M3 embeddings. A
+  # persistent volume is mounted to retain the collection data between runs.
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6333/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # n8n workflow engine. The community edition is used here. Data and
+  # configuration live under the mounted `n8n_data` volume. Scripts and
+  # schemas are made available inside the container for the Execute Command
+  # nodes.
+  n8n:
+    image: n8n/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    environment:
+      - GENERIC_TIMEZONE=Europe/Sofia
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - N8N_SKIP_WEBHOOK_DEREGISTRATION_SHUTDOWN=true
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./scripts:/data/scripts
+      - ./schemas:/data/schemas
+    depends_on:
+      - opensearch
+      - qdrant
+
+  # Worker container used to run Python CLIs for preprocessing, indexing,
+  # deterministic checks, retrieval, classification, judging and report
+  # generation. The container is kept alive with a tail command, and a simple
+  # healthcheck is provided. Scripts and schemas are mounted into /app.
+  worker:
+    image: python:3.11-slim
+    container_name: worker
+    volumes:
+      - ./scripts:/app/scripts
+      - ./schemas:/app/schemas
+    working_dir: /app
+    command: tail -f /dev/null
+    depends_on:
+      - opensearch
+      - qdrant
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('worker ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  opensearch_data:
+  qdrant_data:
+  n8n_data:
