@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Clause analysis output schema",
+  "type": "object",
+  "properties": {
+    "template_used": {
+      "type": "string",
+      "enum": [
+        "contract_main_IRR",
+        "contract_main_FX",
+        "contract_summary_IRR",
+        "contract_summary_FX",
+        "noban"
+      ]
+    },
+    "overall_status": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "REVIEW"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "clause": {"type": "string"},
+          "status": {"type": "string", "enum": ["PASS", "FAIL", "UNCERTAIN"]},
+          "expected": {"type": "string"},
+          "actual": {"type": "string"},
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "doc": {"type": "string"},
+              "page": {"type": "integer"},
+              "element_id": {"type": "string"},
+              "excerpt": {"type": "string"}
+            },
+            "required": ["doc", "page", "element_id", "excerpt"]
+          },
+          "fix": {"type": "string"},
+          "severity": {"type": "string", "enum": ["Low", "Medium", "High", ""]}
+        },
+        "required": ["clause", "status", "expected", "actual", "evidence", "fix", "severity"]
+      }
+    }
+  },
+  "required": ["template_used", "overall_status", "findings"]
+}

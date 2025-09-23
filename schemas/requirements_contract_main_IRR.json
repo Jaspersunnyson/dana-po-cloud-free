@@ -1,0 +1,65 @@
+{
+  "template": "contract_main_IRR",
+  "clauses": [
+    {
+      "id": "warranty",
+      "expected": "۱۲ ماه پس از نصب و راه‌اندازی",
+      "severity": "High",
+      "regex_locators": ["گارانتی", "۱۲ ماه", "نصب"]
+    },
+    {
+      "id": "hidden_defects",
+      "expected": "مسئولیت فروشنده ۶۰ روز پس از تحویل باقی است",
+      "severity": "Medium",
+      "regex_locators": ["عیوب", "پنهان", "۶۰ روز", "تحویل"]
+    },
+    {
+      "id": "accessories",
+      "expected": "پایه، کابل، لوله مسی، درین و … جزء لاینفک موضوع و مشمول قیمت هستند",
+      "severity": "Medium",
+      "regex_locators": ["پایه", "کابل", "لوله", "درین"]
+    },
+    {
+      "id": "ip_indemnity",
+      "expected": "فروشنده خریدار را در برابر دعاوی مالکیت فکری جبران می‌نماید",
+      "severity": "Medium",
+      "regex_locators": ["مالکیت فکری", "IP", "مالکیت معنوی"]
+    },
+    {
+      "id": "termination_setoff",
+      "expected": "حق فسخ به صلاحدید خریدار در قصور و حق کسر از تضامین و مطالبات فروشنده به علاوه ۱۵٪ بالاسری",
+      "severity": "High",
+      "regex_locators": ["فسخ", "تهاتر", "۱۵", "بالاسری"]
+    },
+    {
+      "id": "liquidated_damages",
+      "expected": "بیست و پنج صدم درصد (۰٫۲۵٪) به ازای هر روز تأخیر",
+      "severity": "High",
+      "regex_locators": ["۰٫۲۵", "0.25", "بیست و پنج صدم"]
+    },
+    {
+      "id": "partial_shipments",
+      "expected": "ارسال جزئی فقط با تأیید کتبی خریدار مجاز است",
+      "severity": "Medium",
+      "regex_locators": ["ارسال جزئی", "تأیید"]
+    },
+    {
+      "id": "delivery_anchor",
+      "expected": "مبدأ زمان تحویل اولینِ تاریخ اثر قرارداد یا تاریخ پرداخت پیش‌پرداخت است و تمدید فقط به میزان تأخیر خریدار است",
+      "severity": "Medium",
+      "regex_locators": ["تاریخ اثر", "پرداخت پیش", "روز به روز"]
+    },
+    {
+      "id": "qc_docs",
+      "expected": "Packing List + MTC + CoC + Final Book به عنوان مدارک کنترل کیفی الزامی است",
+      "severity": "Medium",
+      "regex_locators": ["Packing List", "MTC", "CoC", "Final Book"]
+    },
+    {
+      "id": "fx_rate",
+      "expected": "منشأ نرخ ارز fxmarketrate بانک مرکزی در تاریخ صورتحساب است",
+      "severity": "Low",
+      "regex_locators": ["fxmarketrate"]
+    }
+  ]
+}
