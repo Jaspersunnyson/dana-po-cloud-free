@@ -13,7 +13,6 @@ Env vars required (set in Vercel Project Settings → Environment Variables):
   GH_REPO               # e.g., 'dana-po-cloud-free'
   GH_DISPATCH_TOKEN     # fine-grained PAT with Contents:RW and Actions:RW (repo)
 """
-
 import os
 import uuid
 import json
@@ -26,15 +25,11 @@ from fastapi.responses import Response
 
 app = FastAPI()
 
-# Writable on Vercel:
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/tmp/data"))
-
-# Security
 WORKER_TOKEN = os.getenv("WORKER_TOKEN", "")
 
-def verify_token(x_worker_token: Optional[str] = Header(None)):
+def verify_token(x_worker_token: Optional[str] = Header(None, alias="X-Worker-Token")):
     if not WORKER_TOKEN:
-        # If you forgot to set it, block everything.
         raise HTTPException(status_code=500, detail="WORKER_TOKEN not configured")
     if x_worker_token != WORKER_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -52,7 +47,6 @@ def _read_binary(path: Path) -> Optional[bytes]:
         return f.read()
 
 def _dispatch_to_github(job_id: str) -> dict:
-    """POST repository_dispatch to trigger the pipeline."""
     owner = os.getenv("GH_OWNER")
     repo  = os.getenv("GH_REPO")
     token = os.getenv("GH_DISPATCH_TOKEN")
@@ -69,9 +63,12 @@ def _dispatch_to_github(job_id: str) -> dict:
         "event_type": "po_review_request",
         "client_payload": {"jobId": job_id}
     }
-    r = requests.post(url, headers=headers, json=payload, timeout=15)
-    ok = (200 <= r.status_code < 300)
-    return {"dispatched": ok, "status": r.status_code, "text": r.text[:200]}
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        ok = (200 <= r.status_code < 300)
+        return {"dispatched": ok, "status": r.status_code, "text": r.text[:200]}
+    except Exception as e:
+        return {"dispatched": False, "error": str(e)}
 
 @app.get("/health")
 def health():
@@ -90,7 +87,6 @@ async def po_check(
 ):
     job_id = str(uuid.uuid4())
 
-    # Save inputs
     _save_binary(DATA_ROOT / "in" / job_id / "po",        await po.read())
     _save_binary(DATA_ROOT / "in" / job_id / "pi",        await pi.read())
     _save_binary(DATA_ROOT / "in" / job_id / "commission",await commission.read())
@@ -104,6 +100,40 @@ async def po_check(
     _save_binary(DATA_ROOT / "in" / job_id / "toggles.json",
                  json.dumps(toggles, ensure_ascii=False).encode("utf-8"))
 
-    # Init status
     _save_binary(DATA_ROOT / "status" / f"{job_id}.json",
-                 json.dumps({"status": "received"}, ensu
+                 json.dumps({"status": "received"}, ensure_ascii=False).encode("utf-8"))
+
+    dispatch = _dispatch_to_github(job_id)
+    return {"jobId": job_id, "status": "received", "dispatch": dispatch, "status_url": f"/status/{job_id}"}
+
+@app.get("/status/{job_id}")
+def get_status(job_id: str, _=Depends(verify_token)):
+    data = _read_binary(DATA_ROOT / "status" / f"{job_id}.json")
+    if data is None:
+        return {"status": "unknown"}
+    return json.loads(data)
+
+@app.put("/status/{job_id}")
+def put_status(job_id: str, body: bytes = None, _=Depends(verify_token)):
+    if body is None:
+        raise HTTPException(status_code=400, detail="No body provided")
+    _save_binary(DATA_ROOT / "status" / f"{job_id}.json", body)
+    return {"status": "ok"}
+
+@app.get("/artifact/{job_id}/{filename}")
+def get_artifact(job_id: str, filename: str, _=Depends(verify_token)):
+    path = DATA_ROOT / "out" / job_id / filename
+    data = _read_binary(path)
+    if data is None:
+        path = DATA_ROOT / "in" / job_id / filename
+        data = _read_binary(path)
+    if data is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(content=data)
+
+@app.put("/artifact/{job_id}/{filename}")
+def put_artifact(job_id: str, filename: str, body: bytes = None, _=Depends(verify_token)):
+    if body is None:
+        raise HTTPException(status_code=400, detail="No body provided")
+    _save_binary(DATA_ROOT / "out" / job_id / filename, body)
+    return {"status": "ok"}
