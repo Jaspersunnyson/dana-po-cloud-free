@@ -4,9 +4,11 @@ on:
   # Triggered by your external caller (e.g., the worker) via repository_dispatch
   repository_dispatch:
     types: [po_review_request]
+  # Manual button in Actions tab
+  workflow_dispatch: {}
 
 permissions:
-  contents: write  # needed so the workflow can commit reports/ back to the repo
+  contents: write  # allow committing reports/ back to the repo
 
 jobs:
   po-review:
@@ -22,11 +24,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install pipeline dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 
-      - name: Download inputs from worker
+      - name: Download inputs from worker (optional – will skip if not available)
         env:
           WORKER_URL: ${{ secrets.WORKER_URL }}
           WORKER_TOKEN: ${{ secrets.WORKER_TOKEN }}
@@ -35,15 +39,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p inputs
-          for name in po pi commission toggles.json; do
-            echo "Fetching $name ..."
-            # Worker expects X-Worker-Token header
-            curl -sSf -H "X-Worker-Token: $WORKER_TOKEN" "$WORKER_URL/artifact/$JOB_ID/$name" -o "inputs/$name" || true
-          done
-          # Ensure required files exist (po, pi, commission). Fail fast if missing.
+          if [ -n "${WORKER_URL:-}" ] && [ -n "${WORKER_TOKEN:-}" ] && [ -n "${JOB_ID:-}" ]; then
+            for name in po pi commission toggles.json; do
+              echo "Fetching $name ..."
+              curl -sSf -H "X-Worker-Token: $WORKER_TOKEN" \
+                   "$WORKER_URL/artifact/$JOB_ID/$name" -o "inputs/$name" || true
+            done
+          else
+            echo "No WORKER_URL/JOB_ID provided; using repo inputs/ files if present."
+          fi
+          # Ensure required files exist (po, pi, commission). Fail if missing.
           for req in po pi commission; do
             if [ ! -s "inputs/$req" ]; then
-              echo "::error::$req is missing/empty in inputs/"
+              echo "::error file=inputs/$req::missing/empty required input"
               exit 1
             fi
           done
@@ -56,7 +64,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Hash of concatenated inputs; adjust if your true canonical hashing differs
           HASH=$(cat inputs/po inputs/pi inputs/commission | sha256sum | awk '{print $1}')
           echo "PO_HASH=$HASH" | tee -a "$GITHUB_ENV"
           MANIFEST_PATH="reports/$HASH/manifest.json"
@@ -107,7 +114,7 @@ jobs:
               --output run/classified.jsonl
           fi
 
-          # 6) (Placeholder) LLM call — generate dummy results to keep pipeline functional
+          # 6) (Placeholder) LLM call — dummy results to keep pipeline functional
           python - <<'PY'
 import json, pathlib
 pathlib.Path('run/llm_results.jsonl').write_text('', encoding='utf-8')
