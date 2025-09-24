@@ -1,4 +1,6 @@
-name: PO Pipeline (Deta)
+permissions:
+  contents: write
+  name: PO Pipeline (Deta)
 
 on:
   repository_dispatch:
