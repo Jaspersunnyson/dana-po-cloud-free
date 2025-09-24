@@ -1,57 +1,81 @@
 """
-Simple Deta-style worker for PO review pipeline.
+FastAPI worker for PO review pipeline (Vercel-ready).
 
-This FastAPI app exposes endpoints to receive PO review jobs,
-store input files, return artifacts, and update status. It
-stores files under the `/data` directory relative to the
-container root. In a Deta Space deployment, persistent
-storage is provided automatically.
+- Writes to /tmp (Vercel's writable dir).
+- Enforces X-Worker-Token on all routes.
+- On POST /po-check, saves inputs and triggers GitHub repository_dispatch
+  with event_type=po_review_request and client_payload={"jobId": <uuid>}.
 
-Endpoints:
-    POST /po-check
-        Accepts multipart form data with files `po`, `pi`,
-        `commission` and optional toggles: `template_override`,
-        `noban_option`, `pg_waived`, `apg_required`. Saves the
-        files and returns a new job ID.
-
-    GET /status/{jobId}
-        Returns the JSON status for the given job. If the
-        status file does not exist, returns {"status":"unknown"}.
-
-    PUT /status/{jobId}
-        Accepts a JSON body and updates the status for the
-        given job.
-
-    GET /artifact/{jobId}/{filename}
-        Returns the stored file for the given job and file
-        name. Files are stored under `out/{jobId}/{filename}`.
-
-    PUT /artifact/{jobId}/{filename}
-        Writes the body to the output file for the given job
-        and filename. Creates directories as needed.
+Env vars required (set in Vercel Project Settings → Environment Variables):
+  WORKER_TOKEN          # the shared secret for clients
+  DATA_ROOT             # optional; defaults to /tmp/data
+  GH_OWNER              # e.g., 'Jaspersunnyson'
+  GH_REPO               # e.g., 'dana-po-cloud-free'
+  GH_DISPATCH_TOKEN     # fine-grained PAT with Contents:RW and Actions:RW (repo)
 """
 
 import os
 import uuid
 import json
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Header, HTTPException
+from typing import Optional
+
+import requests
+from fastapi import FastAPI, UploadFile, File, Header, HTTPException, Depends
 from fastapi.responses import Response
 
 app = FastAPI()
 
-DATA_ROOT = Path("/data")  # base directory for input, output and status
+# Writable on Vercel:
+DATA_ROOT = Path(os.getenv("DATA_ROOT", "/tmp/data"))
 
-def save_binary(path: Path, data: bytes) -> None:
+# Security
+WORKER_TOKEN = os.getenv("WORKER_TOKEN", "")
+
+def verify_token(x_worker_token: Optional[str] = Header(None)):
+    if not WORKER_TOKEN:
+        # If you forgot to set it, block everything.
+        raise HTTPException(status_code=500, detail="WORKER_TOKEN not configured")
+    if x_worker_token != WORKER_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return True
+
+def _save_binary(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         f.write(data)
 
-def read_binary(path: Path) -> bytes | None:
+def _read_binary(path: Path) -> Optional[bytes]:
     if not path.exists():
         return None
     with open(path, "rb") as f:
         return f.read()
+
+def _dispatch_to_github(job_id: str) -> dict:
+    """POST repository_dispatch to trigger the pipeline."""
+    owner = os.getenv("GH_OWNER")
+    repo  = os.getenv("GH_REPO")
+    token = os.getenv("GH_DISPATCH_TOKEN")
+    if not all([owner, repo, token]):
+        return {"dispatched": False, "reason": "GH_* env missing"}
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/dispatches"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    payload = {
+        "event_type": "po_review_request",
+        "client_payload": {"jobId": job_id}
+    }
+    r = requests.post(url, headers=headers, json=payload, timeout=15)
+    ok = (200 <= r.status_code < 300)
+    return {"dispatched": ok, "status": r.status_code, "text": r.text[:200]}
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 @app.post("/po-check")
 async def po_check(
@@ -62,67 +86,24 @@ async def po_check(
     noban_option: str = "a",
     pg_waived: str = "false",
     apg_required: str = "true",
-    authorization: str | None = Header(default=None)
+    _=Depends(verify_token),
 ):
-    """Receive a PO review job and save its input files and toggles.
-
-    Returns a unique jobId and sets initial status to "received".
-    """
     job_id = str(uuid.uuid4())
-    # Save files
-    save_binary(DATA_ROOT / "in" / job_id / "po", await po.read())
-    save_binary(DATA_ROOT / "in" / job_id / "pi", await pi.read())
-    save_binary(DATA_ROOT / "in" / job_id / "commission", await commission.read())
+
+    # Save inputs
+    _save_binary(DATA_ROOT / "in" / job_id / "po",        await po.read())
+    _save_binary(DATA_ROOT / "in" / job_id / "pi",        await pi.read())
+    _save_binary(DATA_ROOT / "in" / job_id / "commission",await commission.read())
+
     toggles = {
         "template_override": template_override,
         "noban_option": noban_option,
         "pg_waived": pg_waived,
         "apg_required": apg_required,
     }
-    save_binary(
-        DATA_ROOT / "in" / job_id / "toggles.json",
-        json.dumps(toggles, ensure_ascii=False).encode("utf-8"),
-    )
-    # Initialise status
-    save_binary(
-        DATA_ROOT / "status" / f"{job_id}.json",
-        json.dumps({"status": "received"}, ensure_ascii=False).encode("utf-8"),
-    )
-    return {"jobId": job_id, "status": "received", "status_url": f"/status/{job_id}"}
+    _save_binary(DATA_ROOT / "in" / job_id / "toggles.json",
+                 json.dumps(toggles, ensure_ascii=False).encode("utf-8"))
 
-@app.get("/status/{job_id}")
-async def get_status(job_id: str):
-    """Return the status JSON for the given job."""
-    data = read_binary(DATA_ROOT / "status" / f"{job_id}.json")
-    if data is None:
-        return {"status": "unknown"}
-    return json.loads(data)
-
-@app.put("/status/{job_id}")
-async def put_status(job_id: str, body: bytes = None, authorization: str | None = Header(default=None)):
-    """Replace the status JSON for the given job."""
-    if body is None:
-        raise HTTPException(status_code=400, detail="No body provided")
-    save_binary(DATA_ROOT / "status" / f"{job_id}.json", body)
-    return {"status": "ok"}
-
-@app.get("/artifact/{job_id}/{filename}")
-async def get_artifact(job_id: str, filename: str):
-    """Retrieve an output or input file by job ID and filename."""
-    # Try output first
-    path = DATA_ROOT / "out" / job_id / filename
-    data = read_binary(path)
-    if data is None:
-        path = DATA_ROOT / "in" / job_id / filename
-        data = read_binary(path)
-    if data is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    return Response(content=data)
-
-@app.put("/artifact/{job_id}/{filename}")
-async def put_artifact(job_id: str, filename: str, body: bytes = None, authorization: str | None = Header(default=None)):
-    """Store an output file for the given job."""
-    if body is None:
-        raise HTTPException(status_code=400, detail="No body provided")
-    save_binary(DATA_ROOT / "out" / job_id / filename, body)
-    return {"status": "ok"}
+    # Init status
+    _save_binary(DATA_ROOT / "status" / f"{job_id}.json",
+                 json.dumps({"status": "received"}, ensu
